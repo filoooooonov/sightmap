@@ -29,8 +29,10 @@ QUERY = """
   nwr["name"]["tourism"~"^(attraction|museum|gallery|zoo|aquarium|theme_park|viewpoint)$"]({bbox});
   nwr["name"]["historic"~"^(castle|palace|monument|memorial|fort|citywalls|city_gate|ruins|archaeological_site)$"]({bbox});
   nwr["name"]["leisure"~"^(park|garden|stadium)$"]({bbox});
-  nwr["name"]["man_made"~"^(tower|lighthouse)$"]({bbox});
+  nwr["name"]["man_made"~"^(tower|lighthouse|bridge)$"]({bbox});
   nwr["name"]["amenity"="place_of_worship"]({bbox});
+  nwr["name"]["railway"="station"]({bbox});
+  nwr["name"]["place"="square"]({bbox});
   node["name"]["place"~"^(suburb|neighbourhood|quarter|island|islet)$"]({bbox});
 );
 out center tags;
@@ -79,12 +81,18 @@ def kind(tags) -> tuple[str, float]:
         return ("poi", 3.0)
     if tags.get("tourism") == "attraction":
         return ("poi", 2.6)  # noisy tag: any curiosity can be an "attraction"
+    if tags.get("historic") in {"memorial"}:
+        return ("poi", 1.6)  # every square has a statue; rarely the reason
     if "historic" in tags:
         return ("poi", 2.7)
+    if tags.get("place") == "square":
+        return ("poi", 2.6)
     if tags.get("man_made"):
         return ("poi", 2.4)
     if tags.get("leisure") in {"park", "garden"}:
         return ("poi", 2.3)
+    if tags.get("railway") == "station":
+        return ("poi", 2.2)
     if tags.get("leisure") == "stadium":
         return ("poi", 2.0)
     if tags.get("amenity") == "place_of_worship":
@@ -110,10 +118,11 @@ def pick_name(region, candidates) -> str | None:
         if d > search_r:
             continue
         cls, weight = c["kind"]
-        # parents are districts -> area names count extra; children are
-        # concrete sights -> POI names count extra
+        # parents are districts -> area names count extra (strongly so for
+        # big ones: Montmartre should beat the museum at its foot); children
+        # are concrete sights -> POI names count extra
         if p["level"] == "parent" and cls == "place":
-            weight *= 1.6
+            weight *= 2.4 if p["radius_m"] >= 450 else 1.6
         if p["level"] == "child" and cls == "place":
             weight *= 0.7
         score = weight * (1.0 - d / (1.5 * search_r))
