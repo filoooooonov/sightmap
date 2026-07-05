@@ -225,6 +225,7 @@
   </div>
   <div class="chips" id="cats">
     <button data-cat="all" class="active">All</button>
+    <button data-cat="golden">✨ Golden hour</button>
     <button data-cat="sunset">🌅 Sunset</button>
     <button data-cat="party">🎉 Party</button>
     <button data-cat="food">🍜 Food</button>
@@ -325,7 +326,7 @@ const params = new URLSearchParams(location.search);
 let city = params.get("city") || CITIES[0];
 let viewMode = params.get("view") === "hex" ? "hex" : "heat";
 let heatThreshold = Math.min(0.7, Math.max(0, parseFloat(params.get("min") ?? "0.35") || 0));
-const CATS = ["all", "sunset", "party", "food", "nature", "architecture", "art"];
+const CATS = ["all", "golden", "sunset", "party", "food", "nature", "architecture", "art"];
 let cat = CATS.includes(params.get("cat")) ? params.get("cat") : "all";
 
 function urlState() {

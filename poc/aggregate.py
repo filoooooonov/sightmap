@@ -16,6 +16,8 @@ import math
 import pathlib
 import sys
 from collections import defaultdict
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import duckdb
 import h3
@@ -212,6 +214,120 @@ def extract_regions(wmap, heat_users, heat_pos):
     return {"type": "FeatureCollection", "features": feats}, len(kept), n_children
 
 
+CITY_TZ = {
+    "helsinki": "Europe/Helsinki",
+    "paris": "Europe/Paris",
+    "london": "Europe/London",
+    "barcelona": "Europe/Madrid",
+    "newyork": "America/New_York",
+}
+
+# golden hour = sun elevation in this band (deg above horizon)
+GOLDEN_LO, GOLDEN_HI = -4.0, 6.0
+
+
+def sun_elevation_deg(dt_utc: datetime, lat: float, lon: float) -> float:
+    """Sun elevation via the NOAA low-precision formulas (~0.01 deg)."""
+    d = (dt_utc - datetime(2000, 1, 1, 12, tzinfo=timezone.utc)).total_seconds() / 86400.0
+    g = math.radians((357.529 + 0.98560028 * d) % 360)
+    q = (280.459 + 0.98564736 * d) % 360
+    lam = math.radians(q + 1.915 * math.sin(g) + 0.020 * math.sin(2 * g))
+    e = math.radians(23.439 - 0.00000036 * d)
+    ra_h = math.degrees(math.atan2(math.cos(e) * math.sin(lam), math.cos(lam))) / 15
+    decl = math.asin(math.sin(e) * math.sin(lam))
+    gmst = (18.697374558 + 24.06570982441908 * d) % 24
+    ha = math.radians(((gmst + lon / 15 - ra_h) % 24) * 15)
+    lat_r = math.radians(lat)
+    return math.degrees(
+        math.asin(math.sin(lat_r) * math.sin(decl) + math.cos(lat_r) * math.cos(decl) * math.cos(ha))
+    )
+
+
+def golden_flags(tagged, city: str) -> list:
+    """(uid, lat, lon, is_golden) for YFCC rows with a trustworthy capture
+    time. Commons rows are excluded (their datetaken is the upload time),
+    as are unset camera clocks (exact midnight) and junk years."""
+    tz = ZoneInfo(CITY_TZ[city])
+    out = []
+    for uid, lat, lon, _tags, dt in tagged:
+        if "@N" not in uid or not dt:
+            continue
+        try:
+            local = datetime.fromisoformat(str(dt)[:19])
+        except ValueError:
+            continue
+        if local.hour == 0 and local.minute == 0 and local.second == 0:
+            continue
+        if not 2000 <= local.year <= 2026:
+            continue
+        try:
+            utc = local.replace(tzinfo=tz).astimezone(timezone.utc)
+        except Exception:
+            continue
+        elev = sun_elevation_deg(utc, lat, lon)
+        out.append((uid, lat, lon, GOLDEN_LO <= elev <= GOLDEN_HI))
+    return out
+
+
+def golden_layers(flags):
+    """Score cells by golden-hour *share*, not count — the count map is just
+    the popularity map again. Shrinkage toward the citywide share keeps
+    low-evidence cells dark; full heat at ~2.5x the city average."""
+    g_users: dict[str, set] = defaultdict(set)
+    t_users: dict[str, set] = defaultdict(set)
+    g_pos: dict[str, list] = defaultdict(lambda: [0.0, 0.0, 0])
+    for uid, lat, lon, gold in flags:
+        cell = h3.latlng_to_cell(lat, lon, 10)
+        t_users[cell].add(uid)
+        if gold:
+            g_users[cell].add(uid)
+            p = g_pos[cell]
+            p[0] += lon
+            p[1] += lat
+            p[2] += 1
+
+    def smooth(users_by_cell):
+        s: dict[str, float] = defaultdict(float)
+        for cell, users in users_by_cell.items():
+            v = wcount(users)
+            s[cell] += v
+            for n in h3.grid_ring(cell, 1):
+                s[n] += v * 0.5
+        return s
+
+    gs, ts = smooth(g_users), smooth(t_users)
+    total_g = sum(wcount(u) for u in g_users.values())
+    total_t = sum(wcount(u) for u in t_users.values())
+    p0 = total_g / total_t if total_t else 0.0
+    ALPHA = 8.0
+    EVIDENCE = 8.0  # golden mass needed for full score: 2-of-2 flukes stay dim
+    wmap: dict[str, float] = {}
+    for cell, t in ts.items():
+        if p0 <= 0:
+            break
+        g = gs.get(cell, 0.0)
+        share = (g + ALPHA * p0) / (t + ALPHA)
+        lift = max(0.0, min(1.0, (share - p0) / (1.5 * p0)))
+        wmap[cell] = lift * min(1.0, g / EVIDENCE)
+    # normalize to the layer's own max like every other layer, so the best
+    # golden spot renders at full heat instead of drowning under the slider
+    wmax = max(wmap.values(), default=0.0)
+    if wmax > 0:
+        wmap = {c: w / wmax for c, w in wmap.items()}
+    heat_feats = [
+        {
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": cell_coords(cell, g_pos)},
+            "properties": {"w": round(w, 3)},
+        }
+        for cell, w in wmap.items()
+        if w >= 0.02
+    ]
+    heat_out = {"type": "FeatureCollection", "features": heat_feats}
+    regions_out, n_parents, n_children = extract_regions(wmap, g_users, g_pos)
+    return heat_out, regions_out, p0, n_parents
+
+
 # Interest categories: photo qualifies if any of its usertags matches.
 # Tags are user-entered, lowercase, comma-separated (URL-encoded).
 CATEGORIES = {
@@ -320,13 +436,13 @@ def build_city(con: duckdb.DuckDBPyConnection, city: str) -> None:
     lon_min, lat_min, lon_max, lat_max = CITIES[city]
     tagged = con.execute(
         f"""
-        SELECT uid, lat, lon, usertags
+        SELECT uid, lat, lon, usertags, datetaken
         FROM read_parquet({point_sources()}, union_by_name=true)
         WHERE lon BETWEEN ? AND ? AND lat BETWEEN ? AND ?
         """,
         [lon_min, lon_max, lat_min, lat_max],
     ).fetchall()
-    rows = [(uid, lat, lon) for uid, lat, lon, _ in tagged]
+    rows = [(uid, lat, lon) for uid, lat, lon, _, _ in tagged]
     print(f"{city}: {len(rows):,} points, ", end="")
 
     features = []
@@ -365,11 +481,21 @@ def build_city(con: duckdb.DuckDBPyConnection, city: str) -> None:
     regions_path = WEB_DATA / f"{city}_regions.geojson"
     regions_path.write_text(json.dumps(regions_out, separators=(",", ":")), encoding="utf-8")
 
-    cat_stats = []
+    # golden hour: time-of-day signal, independent of tagging discipline
+    flags = golden_flags(tagged, city)
+    g_heat, g_regions, p0, g_parents = golden_layers(flags)
+    (WEB_DATA / f"{city}_heat_golden.geojson").write_text(
+        json.dumps(g_heat, separators=(",", ":")), encoding="utf-8"
+    )
+    (WEB_DATA / f"{city}_regions_golden.geojson").write_text(
+        json.dumps(g_regions, separators=(",", ":")), encoding="utf-8"
+    )
+
+    cat_stats = [f"golden {len(flags):,}t/{p0:.0%}/{g_parents}r"]
     for cat, keywords in CATEGORIES.items():
         sub = [
             (uid, lat, lon)
-            for uid, lat, lon, tags in tagged
+            for uid, lat, lon, tags, _ in tagged
             if tags and not keywords.isdisjoint(tags.split(","))
         ]
         c_heat, c_regions, (nh, np_, nc) = heat_and_regions(sub)
