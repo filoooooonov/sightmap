@@ -39,6 +39,17 @@ CITIES = {
 CELL_AREA_M2 = 15_047  # average H3 res-10 cell area
 
 
+def user_weight(uid: str) -> float:
+    """Flickr photographers (NSIDs like 12345@N00) are interest signal;
+    Commons uploaders document everything systematically (every metro
+    station gets photographed), so they count half."""
+    return 1.0 if "@N" in uid else 0.5
+
+
+def wcount(uids) -> float:
+    return sum(user_weight(u) for u in uids)
+
+
 def cell_coords(cell: str, heat_pos: dict) -> list[float]:
     """Photo centroid of a cell if it has photos, else the cell center."""
     if cell in heat_pos:
@@ -109,7 +120,9 @@ def region_props(comp, wmap, heat_users, heat_pos):
     return {
         "peak": round(peak, 3),
         "prom": round(max(0.0, peak - bg), 3),
-        "users": len(users),
+        # weighted evidence (commons counts half) so pill ranking matches
+        # the heat scoring; close enough to "photographers" for display
+        "users": round(wcount(users)),
         "center": [round(lon / wsum, 5), round(lat / wsum, 5)],
         "peak_at": cell_coords(peak_cell, heat_pos),
         "radius_m": round(max(120.0, math.sqrt(len(comp) * CELL_AREA_M2 / math.pi))),
@@ -124,9 +137,20 @@ def extract_regions(wmap, heat_users, heat_pos):
     regions (individual sights). Parents are kept on evidence (enough
     photographers) or prominence (locally outstanding, e.g. an island zoo).
     """
-    PARENT_T, CHILD_T = 0.25, 0.5
-    parents = connected_components({c for c, w in wmap.items() if w >= PARENT_T})
-    children = connected_components({c for c, w in wmap.items() if w >= CHILD_T})
+    # Density-adaptive threshold: with dense data a fixed cutoff percolates —
+    # the whole center fuses into one mega-region that swallows every
+    # landmark. Raise the parent threshold until the largest component is
+    # district-sized (~180 res-10 cells ≈ 2.7 km²).
+    MAX_COMP_CELLS = 180
+    parent_t = 0.25
+    while parent_t < 0.55:
+        parents = connected_components({c for c, w in wmap.items() if w >= parent_t})
+        if max((len(c) for c in parents), default=0) <= MAX_COMP_CELLS:
+            break
+        parent_t += 0.05
+    children = connected_components(
+        {c for c, w in wmap.items() if w >= parent_t + 0.25}
+    )
 
     kept = []
     for comp in parents:
@@ -243,7 +267,7 @@ def heat_and_regions(rows):
     # Smooth scores over the H3 neighborhood: each cell spills half its value
     # into its 6 neighbors (including empty ones). Nearby spots merge into
     # contiguous regions of interest and lone specks get averaged down.
-    raw = {cell: math.log1p(len(u)) for cell, u in heat_users.items()}
+    raw = {cell: math.log1p(wcount(u)) for cell, u in heat_users.items()}
     smoothed: dict[str, float] = defaultdict(float)
     for cell, val in raw.items():
         smoothed[cell] += val
@@ -284,11 +308,20 @@ def heat_and_regions(rows):
     return heat_out, regions_out, (len(heat_feats), n_parents, n_children)
 
 
+def point_sources() -> str:
+    """YFCC baseline plus any fresh harvests (Flickr API, Wikimedia Commons)."""
+    files = [POINTS.as_posix()]
+    for src in ("flickr", "commons"):
+        files += sorted(p.as_posix() for p in (DATA / src).glob("*.parquet"))
+    return "[" + ", ".join(f"'{f}'" for f in files) + "]"
+
+
 def build_city(con: duckdb.DuckDBPyConnection, city: str) -> None:
     lon_min, lat_min, lon_max, lat_max = CITIES[city]
     tagged = con.execute(
         f"""
-        SELECT uid, lat, lon, usertags FROM '{POINTS.as_posix()}'
+        SELECT uid, lat, lon, usertags
+        FROM read_parquet({point_sources()}, union_by_name=true)
         WHERE lon BETWEEN ? AND ? AND lat BETWEEN ? AND ?
         """,
         [lon_min, lon_max, lat_min, lat_max],
@@ -306,7 +339,7 @@ def build_city(con: duckdb.DuckDBPyConnection, city: str) -> None:
             photos[cell] += 1
 
         max_score = max(
-            (math.log1p(len(u)) for u in cells.values()), default=1.0
+            (math.log1p(wcount(u)) for u in cells.values()), default=1.0
         )
         for cell, uids in cells.items():
             boundary = h3.cell_to_boundary(cell)  # [(lat, lng), ...]
@@ -320,7 +353,7 @@ def build_city(con: duckdb.DuckDBPyConnection, city: str) -> None:
                         "res": res,
                         "users": len(uids),
                         "photos": photos[cell],
-                        "score": round(math.log1p(len(uids)) / max_score, 4),
+                        "score": round(math.log1p(wcount(uids)) / max_score, 4),
                     },
                 }
             )
