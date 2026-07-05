@@ -151,6 +151,28 @@
   .theme-toggle:hover { transform: scale(1.08); box-shadow: var(--shadow); }
   .theme-toggle:active { transform: scale(0.95); }
 
+  /* top-spots list panel (airbnb list <-> map duality) */
+  .spots-panel {
+    position: absolute; top: 74px; right: 16px; z-index: 10;
+    background: var(--surface); color: var(--text-primary);
+    border-radius: 16px; box-shadow: var(--shadow);
+    width: 250px; max-height: min(58vh, 520px); overflow-y: auto;
+    padding: 10px 8px;
+    animation: panel-in 0.45s cubic-bezier(0.2, 0.8, 0.2, 1) 0.2s both;
+  }
+  .sp-head { font-size: 13px; font-weight: 800; padding: 4px 10px 8px; }
+  .sp-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 10px; border-radius: 10px; cursor: pointer;
+    transition: background 0.15s ease;
+  }
+  .sp-row:hover { background: var(--surface-2); }
+  .sp-rank { font-size: 11px; font-weight: 700; color: var(--text-secondary); width: 15px; text-align: right; flex: none; }
+  .sp-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .sp-name { font-size: 12.5px; font-weight: 600; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sp-users { font-size: 11px; color: var(--text-secondary); flex: none; }
+  .sp-empty { font-size: 12px; color: var(--text-secondary); padding: 4px 10px 8px; }
+
   /* hover card */
   .hovercard {
     position: absolute; z-index: 20; pointer-events: none;
@@ -245,6 +267,11 @@
 
 <button class="theme-toggle" id="themeToggle" aria-label="Toggle theme">◐</button>
 <div class="hovercard" id="hovercard"></div>
+
+<div class="spots-panel">
+  <div class="sp-head">Top spots here</div>
+  <div id="spotsList"></div>
+</div>
 
 <script>
 const CITIES = ["helsinki", "paris", "london", "barcelona", "newyork"];
@@ -491,6 +518,7 @@ function updateSpots() {
       .addTo(map);
     spotMarkers.push({
       marker, el: wrap, lngLat: center, users: p.users,
+      name: p.name, peak: p.peak,
       level: p.level, hasKids: withKids.has(p.id),
     });
   });
@@ -528,9 +556,60 @@ function updateSpotVisibility() {
     : [];
   const show = new Set([...parents, ...children]);
   for (const s of spotMarkers) s.el.style.display = show.has(s) ? "" : "none";
+  updateSpotsList();
 }
 map.on("zoom", updateSpotVisibility);
 map.on("moveend", updateSpotVisibility);
+
+// ---- top-spots list, synced with the viewport ----
+function peakColor(peak) {
+  const g = GLOW[theme];
+  return peak < 0.55 ? g[0] : peak < 0.85 ? g[1] : g[2];
+}
+
+const esc = (t) => String(t).replace(/[&<>"']/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+function updateSpotsList() {
+  const listEl = document.getElementById("spotsList");
+  const z = map.getZoom();
+  const b = map.getBounds();
+  const seen = new Set();
+  const rows = spotMarkers
+    .filter((s) => b.contains(s.lngLat) && (z >= 13.4 || s.level === "parent"))
+    .sort((a, c) => c.users - a.users)
+    .filter((s) => {
+      // a parent and its child sight can share a name (Louvre in Louvre)
+      const k = s.name || Symbol();
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    })
+    .slice(0, 10);
+  if (!rows.length) {
+    listEl.innerHTML = '<div class="sp-empty">Nothing here — zoom out or pan.</div>';
+    return;
+  }
+  listEl.innerHTML = "";
+  rows.forEach((s, i) => {
+    const row = document.createElement("div");
+    row.className = "sp-row";
+    row.innerHTML =
+      `<span class="sp-rank">${i + 1}</span>` +
+      `<span class="sp-dot" style="background:${peakColor(s.peak)}"></span>` +
+      `<span class="sp-name">${esc(s.name || "Unnamed spot")}</span>` +
+      `<span class="sp-users">📷 ${s.users}</span>`;
+    row.addEventListener("click", () => {
+      map.flyTo({
+        center: s.lngLat,
+        zoom: s.level === "parent" ? 14 : Math.max(map.getZoom() + 1.2, 15),
+        duration: 1200,
+        essential: true,
+      });
+    });
+    listEl.appendChild(row);
+  });
+}
 
 const EMPTY = { type: "FeatureCollection", features: [] };
 
