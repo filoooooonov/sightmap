@@ -68,6 +68,20 @@
   select:hover { border-color: var(--text-primary); }
   select:focus-visible { box-shadow: 0 0 0 2px var(--accent-soft); }
 
+  /* interest category chips */
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+  .chips button {
+    font: inherit; font-size: 11.5px; font-weight: 600;
+    padding: 5px 10px; border-radius: 999px;
+    border: 1px solid var(--border); background: var(--surface);
+    color: var(--text-primary); cursor: pointer;
+    transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease, transform 0.18s ease;
+  }
+  .chips button:hover { border-color: var(--text-primary); transform: translateY(-1px); }
+  .chips button.active {
+    background: var(--text-primary); color: var(--surface); border-color: var(--text-primary);
+  }
+
   /* segmented control with sliding thumb */
   .seg {
     position: relative; display: flex; flex: 1;
@@ -187,6 +201,15 @@
     <label for="city">City</label>
     <select id="city"></select>
   </div>
+  <div class="chips" id="cats">
+    <button data-cat="all" class="active">All</button>
+    <button data-cat="sunset">🌅 Sunset</button>
+    <button data-cat="party">🎉 Party</button>
+    <button data-cat="food">🍜 Food</button>
+    <button data-cat="nature">🌳 Nature</button>
+    <button data-cat="architecture">🏛️ Architecture</button>
+    <button data-cat="art">🎨 Art</button>
+  </div>
   <div class="row">
     <label>View</label>
     <div class="seg" id="view">
@@ -275,6 +298,12 @@ const params = new URLSearchParams(location.search);
 let city = params.get("city") || CITIES[0];
 let viewMode = params.get("view") === "hex" ? "hex" : "heat";
 let heatThreshold = Math.min(0.7, Math.max(0, parseFloat(params.get("min") ?? "0.35") || 0));
+const CATS = ["all", "sunset", "party", "food", "nature", "architecture", "art"];
+let cat = CATS.includes(params.get("cat")) ? params.get("cat") : "all";
+
+function urlState() {
+  return `?city=${city}&view=${viewMode}&min=${heatThreshold}&cat=${cat}`;
+}
 
 const citySel = document.getElementById("city");
 for (const c of CITIES) {
@@ -503,30 +532,34 @@ function updateSpotVisibility() {
 map.on("zoom", updateSpotVisibility);
 map.on("moveend", updateSpotVisibility);
 
-let firstLoad = true;
-async function loadCity(c) {
-  const [resp, heatResp, regResp] = await Promise.all([
-    fetch(`data/${c}.geojson`),
-    fetch(`data/${c}_heat.geojson`),
-    fetch(`data/${c}_regions.geojson`),
+const EMPTY = { type: "FeatureCollection", features: [] };
+
+async function loadCategory(k) {
+  const suffix = k === "all" ? "" : `_${k}`;
+  const [heatResp, regResp] = await Promise.all([
+    fetch(`data/${city}_heat${suffix}.geojson`),
+    fetch(`data/${city}_regions${suffix}.geojson`),
   ]);
-  if (!resp.ok) { alert(`No data for ${c} — run aggregate.py ${c}`); return; }
-  cityData = await resp.json();
-  heatData = heatResp.ok
-    ? await heatResp.json()
-    : { type: "FeatureCollection", features: [] };
-  regionData = regResp.ok
-    ? await regResp.json()
-    : { type: "FeatureCollection", features: [] };
-  const [lon, lat] = cityData.properties.center;
+  heatData = heatResp.ok ? await heatResp.json() : EMPTY;
+  regionData = regResp.ok ? await regResp.json() : EMPTY;
   // px radius at z10 for each region glow, clamped so importance is read
   // from color/label rather than raw blob area
+  const lat = cityData ? cityData.properties.center[1] : map.getCenter().lat;
   const mpp10 = (156543.03392 * Math.cos((lat * Math.PI) / 180)) / 1024;
   for (const f of regionData.features) {
     const isParent = f.properties.level === "parent";
     const rpx = f.properties.radius_m / mpp10;
     f.properties.r10 = Math.min(isParent ? 9 : 4.5, Math.max(isParent ? 2.4 : 1.5, rpx));
   }
+}
+
+let firstLoad = true;
+async function loadCity(c) {
+  const resp = await fetch(`data/${c}.geojson`);
+  if (!resp.ok) { alert(`No data for ${c} — run aggregate.py ${c}`); return; }
+  cityData = await resp.json();
+  await loadCategory(cat);
+  const [lon, lat] = cityData.properties.center;
   if (firstLoad) {
     map.jumpTo({ center: [lon, lat], zoom: 12 });
     firstLoad = false;
@@ -542,8 +575,26 @@ map.on("zoom", () => { if (resMode === "auto") refreshFilter(); });
 
 citySel.addEventListener("change", () => {
   city = citySel.value;
-  history.replaceState(null, "", `?city=${city}&view=${viewMode}&min=${heatThreshold}`);
+  history.replaceState(null, "", urlState());
   loadCity(city);
+});
+
+// interest category chips
+if (cat !== "all") {
+  document.querySelectorAll("#cats button").forEach((b) =>
+    b.classList.toggle("active", b.dataset.cat === cat));
+}
+document.querySelectorAll("#cats button").forEach((b) => {
+  b.addEventListener("click", async () => {
+    if (b.dataset.cat === cat) return;
+    document.querySelectorAll("#cats button").forEach((x) => x.classList.remove("active"));
+    b.classList.add("active");
+    cat = b.dataset.cat;
+    history.replaceState(null, "", urlState());
+    await loadCategory(cat);
+    addLayers();
+    updateSpots();
+  });
 });
 
 // ---- segmented controls with sliding thumb ----
@@ -571,7 +622,7 @@ initSeg(document.getElementById("view"), (b) => {
   document.body.dataset.view = viewMode;
   document.getElementById("hexRow").classList.toggle("disabled", viewMode !== "hex");
   document.getElementById("minRow").classList.toggle("disabled", viewMode !== "heat");
-  history.replaceState(null, "", `?city=${city}&view=${viewMode}&min=${heatThreshold}`);
+  history.replaceState(null, "", urlState());
   applyView();
 });
 
@@ -611,7 +662,7 @@ syncSlider();
 minHeat.addEventListener("input", () => {
   heatThreshold = parseFloat(minHeat.value);
   syncSlider();
-  history.replaceState(null, "", `?city=${city}&view=${viewMode}&min=${heatThreshold}`);
+  history.replaceState(null, "", urlState());
   if (map.getLayer("heat")) {
     map.setPaintProperty("heat", "heatmap-color", heatColorExpr());
   }

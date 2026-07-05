@@ -134,17 +134,21 @@ def pick_name(region, candidates) -> str | None:
 def main() -> None:
     targets = sys.argv[1:] or list(CITIES)
     for city in targets:
-        path = WEB_DATA / f"{city}_regions.geojson"
-        data = json.loads(path.read_text(encoding="utf-8"))
         candidates = fetch_candidates(CITIES[city])
-        named = 0
-        for f in data["features"]:
-            name = pick_name(f, candidates)
-            if name:
-                f["properties"]["name"] = name
-                named += 1
-        path.write_text(json.dumps(data, separators=(",", ":")), encoding="utf-8")
-        print(f"{city}: {len(candidates):,} candidates, named {named}/{len(data['features'])} regions")
+        # one candidates fetch names the base regions and every category's
+        # regions (<city>_regions.geojson, <city>_regions_<cat>.geojson)
+        counts = []
+        for path in sorted(WEB_DATA.glob(f"{city}_regions*.geojson")):
+            data = json.loads(path.read_text(encoding="utf-8"))
+            named = 0
+            for f in data["features"]:
+                name = pick_name(f, candidates)
+                if name:
+                    f["properties"]["name"] = name
+                    named += 1
+            path.write_text(json.dumps(data, separators=(",", ":")), encoding="utf-8")
+            counts.append(f"{path.stem.replace(city + '_regions', '') or 'base'} {named}/{len(data['features'])}")
+        print(f"{city}: {len(candidates):,} candidates; named " + ", ".join(counts))
         time.sleep(3)  # be polite to overpass
 
 

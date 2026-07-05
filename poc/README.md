@@ -13,7 +13,9 @@ Creative Commons Flickr photos, 2004–2014), streamed from Hugging Face.
    lat, lon, datetaken for every geotagged photo into
    `data/yfcc_points.parquet`.
 3. **`aggregate.py [city ...]`** — filters points to a city bounding box
-   (presets in `CITIES`) and writes, per city:
+   (presets in `CITIES`) and writes, per city and per interest category
+   (all/sunset/party/food/nature/architecture/art, matched on Flickr
+   usertags — see `CATEGORIES`):
    - `web/data/<city>.geojson` — H3 hexagons (res 7/8/9) scored by
      `log1p(distinct photographers)`, for the hex view;
    - `web/data/<city>_heat.geojson` — res-10 cells with neighbourhood-smoothed,

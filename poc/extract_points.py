@@ -35,7 +35,8 @@ con.execute(
             uid,
             TRY_CAST(latitude AS DOUBLE)  AS lat,
             TRY_CAST(longitude AS DOUBLE) AS lon,
-            datetaken
+            datetaken,
+            usertags
         FROM read_parquet({urls_sql})
         WHERE TRY_CAST(latitude AS DOUBLE) IS NOT NULL
           AND TRY_CAST(longitude AS DOUBLE) IS NOT NULL

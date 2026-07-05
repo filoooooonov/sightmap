@@ -188,51 +188,49 @@ def extract_regions(wmap, heat_users, heat_pos):
     return {"type": "FeatureCollection", "features": feats}, len(kept), n_children
 
 
-def build_city(con: duckdb.DuckDBPyConnection, city: str) -> None:
-    lon_min, lat_min, lon_max, lat_max = CITIES[city]
-    rows = con.execute(
-        f"""
-        SELECT uid, lat, lon FROM '{POINTS.as_posix()}'
-        WHERE lon BETWEEN ? AND ? AND lat BETWEEN ? AND ?
-        """,
-        [lon_min, lon_max, lat_min, lat_max],
-    ).fetchall()
-    print(f"{city}: {len(rows):,} points, ", end="")
+# Interest categories: photo qualifies if any of its usertags matches.
+# Tags are user-entered, lowercase, comma-separated (URL-encoded).
+CATEGORIES = {
+    "sunset": {
+        "sunset", "sunsets", "sunrise", "dusk", "dawn", "twilight",
+        "goldenhour", "golden+hour", "atardecer", "sonnenuntergang",
+        "auringonlasku", "solnedgang",
+    },
+    "party": {
+        "party", "nightlife", "club", "nightclub", "clubbing", "concert",
+        "gig", "festival", "rave", "dj", "bar", "pub", "karaoke", "disco",
+    },
+    "food": {
+        "food", "restaurant", "restaurants", "cafe", "caf%c3%a9", "coffee",
+        "breakfast", "brunch", "lunch", "dinner", "foodporn", "market",
+        "streetfood", "pizza", "sushi", "dessert", "bakery", "wine", "beer",
+    },
+    "nature": {
+        "nature", "park", "garden", "gardens", "forest", "beach", "lake",
+        "river", "flowers", "trees", "botanical", "wildlife", "birds",
+        "hiking", "sea", "island", "autumn", "spring",
+    },
+    "architecture": {
+        "architecture", "building", "buildings", "church", "cathedral",
+        "castle", "palace", "bridge", "tower", "skyscraper", "facade",
+        "dome", "monument", "ruins", "modernism",
+    },
+    "art": {
+        "art", "streetart", "street+art", "graffiti", "mural", "murals",
+        "museum", "gallery", "sculpture", "statue", "exhibition", "mosaic",
+    },
+}
 
-    features = []
-    for res in RESOLUTIONS:
-        cells: dict[str, set] = defaultdict(set)
-        photos: dict[str, int] = defaultdict(int)
-        for uid, lat, lon in rows:
-            cell = h3.latlng_to_cell(lat, lon, res)
-            cells[cell].add(uid)
-            photos[cell] += 1
 
-        max_score = max(
-            (math.log1p(len(u)) for u in cells.values()), default=1.0
-        )
-        for cell, uids in cells.items():
-            boundary = h3.cell_to_boundary(cell)  # [(lat, lng), ...]
-            ring = [[lng, lat] for lat, lng in boundary]
-            ring.append(ring[0])
-            features.append(
-                {
-                    "type": "Feature",
-                    "geometry": {"type": "Polygon", "coordinates": [ring]},
-                    "properties": {
-                        "res": res,
-                        "users": len(uids),
-                        "photos": photos[cell],
-                        "score": round(math.log1p(len(uids)) / max_score, 4),
-                    },
-                }
-            )
+def heat_and_regions(rows):
+    """rows [(uid, lat, lon), ...] -> (heat geojson, regions geojson, stats).
 
-    # Heatmap points: res-10 cells (~66m) with log-scaled photographer score.
-    # Raw photo points don't work — KDE sums them, so the center clamps long
-    # before sparse areas register. Log compression must happen before
-    # rendering. Positions are each cell's photo centroid, not the hex
-    # center, so no lattice shows through the blur.
+    Heatmap points: res-10 cells (~66m) with log-scaled photographer score.
+    Raw photo points don't work — KDE sums them, so the center clamps long
+    before sparse areas register. Log compression must happen before
+    rendering. Positions are each cell's photo centroid, not the hex
+    center, so no lattice shows through the blur.
+    """
     heat_users: dict[str, set] = defaultdict(set)
     heat_pos: dict[str, list] = defaultdict(lambda: [0.0, 0.0, 0])
     for uid, lat, lon in rows:
@@ -282,13 +280,73 @@ def build_city(con: duckdb.DuckDBPyConnection, city: str) -> None:
             }
         )
     heat_out = {"type": "FeatureCollection", "features": heat_feats}
+    regions_out, n_parents, n_children = extract_regions(wmap, heat_users, heat_pos)
+    return heat_out, regions_out, (len(heat_feats), n_parents, n_children)
+
+
+def build_city(con: duckdb.DuckDBPyConnection, city: str) -> None:
+    lon_min, lat_min, lon_max, lat_max = CITIES[city]
+    tagged = con.execute(
+        f"""
+        SELECT uid, lat, lon, usertags FROM '{POINTS.as_posix()}'
+        WHERE lon BETWEEN ? AND ? AND lat BETWEEN ? AND ?
+        """,
+        [lon_min, lon_max, lat_min, lat_max],
+    ).fetchall()
+    rows = [(uid, lat, lon) for uid, lat, lon, _ in tagged]
+    print(f"{city}: {len(rows):,} points, ", end="")
+
+    features = []
+    for res in RESOLUTIONS:
+        cells: dict[str, set] = defaultdict(set)
+        photos: dict[str, int] = defaultdict(int)
+        for uid, lat, lon in rows:
+            cell = h3.latlng_to_cell(lat, lon, res)
+            cells[cell].add(uid)
+            photos[cell] += 1
+
+        max_score = max(
+            (math.log1p(len(u)) for u in cells.values()), default=1.0
+        )
+        for cell, uids in cells.items():
+            boundary = h3.cell_to_boundary(cell)  # [(lat, lng), ...]
+            ring = [[lng, lat] for lat, lng in boundary]
+            ring.append(ring[0])
+            features.append(
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Polygon", "coordinates": [ring]},
+                    "properties": {
+                        "res": res,
+                        "users": len(uids),
+                        "photos": photos[cell],
+                        "score": round(math.log1p(len(uids)) / max_score, 4),
+                    },
+                }
+            )
+
     WEB_DATA.mkdir(parents=True, exist_ok=True)
+    heat_out, regions_out, (n_heat, n_parents, n_children) = heat_and_regions(rows)
     heat_path = WEB_DATA / f"{city}_heat.geojson"
     heat_path.write_text(json.dumps(heat_out, separators=(",", ":")), encoding="utf-8")
-
-    regions_out, n_parents, n_children = extract_regions(wmap, heat_users, heat_pos)
     regions_path = WEB_DATA / f"{city}_regions.geojson"
     regions_path.write_text(json.dumps(regions_out, separators=(",", ":")), encoding="utf-8")
+
+    cat_stats = []
+    for cat, keywords in CATEGORIES.items():
+        sub = [
+            (uid, lat, lon)
+            for uid, lat, lon, tags in tagged
+            if tags and not keywords.isdisjoint(tags.split(","))
+        ]
+        c_heat, c_regions, (nh, np_, nc) = heat_and_regions(sub)
+        (WEB_DATA / f"{city}_heat_{cat}.geojson").write_text(
+            json.dumps(c_heat, separators=(",", ":")), encoding="utf-8"
+        )
+        (WEB_DATA / f"{city}_regions_{cat}.geojson").write_text(
+            json.dumps(c_regions, separators=(",", ":")), encoding="utf-8"
+        )
+        cat_stats.append(f"{cat} {len(sub):,}p/{np_}r")
 
     # center on where the photos actually are, not the bbox middle
     if rows:
@@ -308,8 +366,8 @@ def build_city(con: duckdb.DuckDBPyConnection, city: str) -> None:
     path.write_text(json.dumps(out), encoding="utf-8")
     n9 = sum(1 for f in features if f["properties"]["res"] == 9)
     print(
-        f"{n9:,} res-9 cells -> {path.name}, {len(heat_feats):,} heat points, "
-        f"{n_parents} regions / {n_children} sub-spots -> {regions_path.name}"
+        f"{n9:,} res-9 cells, {n_heat:,} heat points, "
+        f"{n_parents} regions / {n_children} sub-spots; " + ", ".join(cat_stats)
     )
 
 
