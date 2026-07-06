@@ -498,7 +498,8 @@ function updateSpots() {
     const wrap = document.createElement("div");
     const el = document.createElement("div");
     el.className = "spot-pill";
-    el.textContent = p.name || `📷 ${p.users}`;
+    const icon = TYPE_ICON[p.type];
+    el.textContent = p.name ? (icon ? `${icon} ${p.name}` : p.name) : `📷 ${p.users}`;
     el.title = `${p.users} photographers`;
     el.style.animationDelay = `${Math.min(i, 8) * 60}ms`;
     wrap.appendChild(el);
@@ -519,7 +520,7 @@ function updateSpots() {
       .addTo(map);
     spotMarkers.push({
       marker, el: wrap, lngLat: center, users: p.users,
-      name: p.name, peak: p.peak,
+      name: p.name, peak: p.peak, type: p.type,
       level: p.level, hasKids: withKids.has(p.id),
     });
   });
@@ -571,6 +572,9 @@ function peakColor(peak) {
 const esc = (t) => String(t).replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
+// region type (from Overture venue mix) -> icon
+const TYPE_ICON = { culture: "🏛️", nature: "🌳", food: "🍜", nightlife: "🍸" };
+
 function updateSpotsList() {
   const listEl = document.getElementById("spotsList");
   const z = map.getZoom();
@@ -598,7 +602,7 @@ function updateSpotsList() {
     row.innerHTML =
       `<span class="sp-rank">${i + 1}</span>` +
       `<span class="sp-dot" style="background:${peakColor(s.peak)}"></span>` +
-      `<span class="sp-name">${esc(s.name || "Unnamed spot")}</span>` +
+      `<span class="sp-name">${TYPE_ICON[s.type] ? TYPE_ICON[s.type] + " " : ""}${esc(s.name || "Unnamed spot")}</span>` +
       `<span class="sp-users">📷 ${s.users}</span>`;
     row.addEventListener("click", () => {
       map.flyTo({
