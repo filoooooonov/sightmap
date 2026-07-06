@@ -31,6 +31,17 @@ MAX_TILE = 0.05   # geosearch rejects big bboxes ("Bounding box is too big")
 calls = 0
 
 
+def all_cities() -> dict:
+    """Preset cities plus the phase-1 queue (cities_phase1.json)."""
+    cities = dict(CITIES)
+    extra = HERE / "cities_phase1.json"
+    if extra.exists():
+        cities.update(
+            {k: tuple(v) for k, v in json.loads(extra.read_text(encoding="utf-8")).items()}
+        )
+    return cities
+
+
 def call(params: dict, tries: int = 4) -> dict:
     global calls
     q = {"action": "query", "format": "json", "formatversion": 2, "maxlag": 5, **params}
@@ -102,7 +113,10 @@ class CityState:
         if self.jsonl.exists():
             with self.jsonl.open(encoding="utf-8") as f:
                 for line in f:
-                    row = json.loads(line)
+                    try:  # a kill mid-append can truncate the last line
+                        row = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
                     self.photos[row["photoid"]] = row
         if self.done_f.exists():
             self.done = set(self.done_f.read_text(encoding="utf-8").split())
@@ -176,7 +190,8 @@ def harvest(bbox, st: CityState, depth: int = 0) -> None:
 
 
 def main() -> None:
-    targets = sys.argv[1:] or list(CITIES)
+    cities = all_cities()
+    targets = sys.argv[1:] or list(cities)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     con = duckdb.connect()
     for city in targets:
@@ -187,7 +202,7 @@ def main() -> None:
         print(f"{city}: harvesting Wikimedia Commons", flush=True)
         t0 = time.time()
         st = CityState(city)
-        harvest(CITIES[city], st)
+        harvest(cities[city], st)
         con.execute(
             f"""
             COPY (

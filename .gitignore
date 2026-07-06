@@ -1,5 +1,11 @@
 # raw YFCC shards + extracted points (~1.7GB) — rebuild with poc/download_parquet.sh
-poc/data/
+# but DO track the compact commons harvest results (parquet) and gzipped
+# resume checkpoints, so the CI harvest queue can commit its progress
+poc/data/*
+!poc/data/commons/
+poc/data/commons/*
+!poc/data/commons/*.parquet
+!poc/data/commons/*.gz
 
 __pycache__/
 *.pyc

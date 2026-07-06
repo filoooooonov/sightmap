@@ -1,0 +1,62 @@
+name: commons-harvest
+
+# Harvests Wikimedia Commons metadata for the phase-1 city queue, ~5.5h
+# per run, resuming from committed checkpoints. Kicks off on push (of this
+# file), on a 6h schedule, or manually. Stops being scheduled work once
+# every city has its parquet (the run becomes a no-op in seconds).
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 */6 * * *"
+  push:
+    paths:
+      - ".github/workflows/harvest.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: harvest
+  cancel-in-progress: false
+
+jobs:
+  harvest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install duckdb h3
+
+      - name: unpack resume checkpoints
+        shell: bash
+        run: |
+          shopt -s nullglob
+          for f in poc/data/commons/*.gz; do gunzip -f "$f"; done
+
+      - name: harvest queue (time-boxed)
+        shell: bash
+        run: |
+          cd poc
+          # SIGTERM after the budget; checkpoints make this safe
+          timeout --signal=TERM 19200 python commons_harvest.py || true
+
+      - name: commit progress
+        shell: bash
+        run: |
+          shopt -s nullglob
+          for f in poc/data/commons/*.jsonl poc/data/commons/*.done poc/data/commons/*.splits; do
+            gzip -f "$f"
+          done
+          git config user.name "harvest-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add poc/data/commons
+          git diff --cached --quiet && { echo "nothing new"; exit 0; }
+          git commit -m "harvest: $(git diff --cached --name-only | grep -c parquet) parquet(s), $(date -u +%FT%H:%M)"
+          git pull --rebase origin main
+          git push
