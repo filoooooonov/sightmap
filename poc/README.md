@@ -24,10 +24,20 @@ Creative Commons Flickr photos, 2004–2014), streamed from Hugging Face.
      connected components at two thresholds (parent districts / child
      sights), each with photographer count, peak, and prominence vs. its
      own surroundings.
-4. **`name_regions.py [city ...]`** — attaches OSM names to regions via one
-   Overpass query per city (POIs + neighbourhood labels, fame-boosted by
-   Wikipedia/Wikidata presence, anchored on each region's peak cell).
-5. **`web/index.html`** — MapLibre GL map (free Carto basemaps): thermal
+4. **`commons_harvest.py [city ...]`** — optional but recommended: fresh
+   geotagged photos from Wikimedia Commons (live data, no API key,
+   crash-resumable). Commons uploaders count half a Flickr photographer in
+   scoring (documentation vs interest bias). `flickr_harvest.py` exists too
+   but new Flickr API keys require a Pro plan.
+5. **`overturemaps download`** (pip install overturemaps) — optional:
+   Overture places per city bbox into `data/overture/<city>.parquet`;
+   adds naming candidates and region *types* (culture/nature/food/nightlife
+   by venue lift vs citywide totals).
+6. **`name_regions.py [city ...]`** — attaches names to regions: OSM via
+   one Overpass query per city + Overture culture/nature places,
+   fame-boosted by Wikipedia/Wikidata presence, anchored on each region's
+   peak cell. Also writes each region's type.
+7. **`web/index.html`** — MapLibre GL map (free Carto basemaps): thermal
    gradient heatmap with a user threshold slider, named clickable region
    pills with viewport-based selection and parent→child reveal on zoom,
    region glows, hex view, hover cards, fly-to animations, light/dark theme.
