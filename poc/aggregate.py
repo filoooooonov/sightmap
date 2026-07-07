@@ -38,6 +38,31 @@ CITIES = {
 }
 
 
+def all_cities() -> dict:
+    """Preset cities plus the phase-1 queue (cities_phase1.json)."""
+    cities = dict(CITIES)
+    extra = pathlib.Path(__file__).parent / "cities_phase1.json"
+    if extra.exists():
+        cities.update(
+            {k: tuple(v) for k, v in json.loads(extra.read_text(encoding="utf-8")).items()}
+        )
+    return cities
+
+
+def city_tz(city: str) -> ZoneInfo:
+    """Timezone for golden-hour math: presets are hardcoded, everything
+    else resolved from the bbox center via timezonefinder."""
+    if city in CITY_TZ:
+        return ZoneInfo(CITY_TZ[city])
+    from timezonefinder import TimezoneFinder  # lazy: ~50MB dataset
+
+    lon_min, lat_min, lon_max, lat_max = all_cities()[city]
+    tzname = TimezoneFinder().timezone_at(
+        lng=(lon_min + lon_max) / 2, lat=(lat_min + lat_max) / 2
+    )
+    return ZoneInfo(tzname or "UTC")
+
+
 CELL_AREA_M2 = 15_047  # average H3 res-10 cell area
 
 
@@ -247,7 +272,7 @@ def golden_flags(tagged, city: str) -> list:
     """(uid, lat, lon, is_golden) for YFCC rows with a trustworthy capture
     time. Commons rows are excluded (their datetaken is the upload time),
     as are unset camera clocks (exact midnight) and junk years."""
-    tz = ZoneInfo(CITY_TZ[city])
+    tz = city_tz(city)
     out = []
     for uid, lat, lon, _tags, dt in tagged:
         if "@N" not in uid or not dt:
@@ -433,7 +458,7 @@ def point_sources() -> str:
 
 
 def build_city(con: duckdb.DuckDBPyConnection, city: str) -> None:
-    lon_min, lat_min, lon_max, lat_max = CITIES[city]
+    lon_min, lat_min, lon_max, lat_max = all_cities()[city]
     tagged = con.execute(
         f"""
         SELECT uid, lat, lon, usertags, datetaken
@@ -531,10 +556,11 @@ def build_city(con: duckdb.DuckDBPyConnection, city: str) -> None:
 
 
 def main() -> None:
+    cities = all_cities()
     targets = sys.argv[1:] or ["helsinki"]
-    unknown = [c for c in targets if c not in CITIES]
+    unknown = [c for c in targets if c not in cities]
     if unknown:
-        sys.exit(f"unknown cities: {unknown}; known: {list(CITIES)}")
+        sys.exit(f"unknown cities: {unknown}; {len(cities)} known")
     con = duckdb.connect()
     for city in targets:
         build_city(con, city)

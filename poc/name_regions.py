@@ -20,7 +20,7 @@ from collections import defaultdict
 
 import duckdb
 
-from aggregate import CITIES
+from aggregate import all_cities
 
 WEB_DATA = pathlib.Path(__file__).parent / "web" / "data"
 OVERTURE_DIR = pathlib.Path(__file__).parent / "data" / "overture"
@@ -208,9 +208,10 @@ def pick_name(region, candidates) -> tuple[str, str | None] | None:
 
 
 def main() -> None:
-    targets = sys.argv[1:] or list(CITIES)
+    cities = all_cities()
+    targets = sys.argv[1:] or list(cities)
     for city in targets:
-        candidates = fetch_candidates(CITIES[city])
+        candidates = fetch_candidates(cities[city])
         ov_naming, venues = load_overture(city)
         candidates = candidates + ov_naming
         totals: dict[str, float] = defaultdict(float)

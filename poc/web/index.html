@@ -275,8 +275,8 @@
 </div>
 
 <script>
-const CITIES = ["helsinki", "paris", "london", "barcelona", "newyork"];
-const CITY_LABELS = { helsinki: "Helsinki", paris: "Paris", london: "London", barcelona: "Barcelona", newyork: "New York" };
+// city list comes from data/cities.json (written by build_all.py)
+let cityIndex = { helsinki: "Helsinki" };
 const STYLES = {
   light: "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
   dark: "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
@@ -323,7 +323,7 @@ let regionData = null;
 let spotMarkers = [];
 
 const params = new URLSearchParams(location.search);
-let city = params.get("city") || CITIES[0];
+let city = params.get("city") || "helsinki";
 let viewMode = params.get("view") === "hex" ? "hex" : "heat";
 let heatThreshold = Math.min(0.7, Math.max(0, parseFloat(params.get("min") ?? "0.35") || 0));
 const CATS = ["all", "golden", "sunset", "party", "food", "nature", "architecture", "art"];
@@ -334,12 +334,20 @@ function urlState() {
 }
 
 const citySel = document.getElementById("city");
-for (const c of CITIES) {
-  const o = document.createElement("option");
-  o.value = c; o.textContent = CITY_LABELS[c];
-  citySel.appendChild(o);
-}
-citySel.value = city;
+const cityListReady = fetch("data/cities.json")
+  .then((r) => (r.ok ? r.json() : cityIndex))
+  .catch(() => cityIndex)
+  .then((idx) => {
+    cityIndex = idx;
+    if (!(city in cityIndex)) city = Object.keys(cityIndex)[0];
+    for (const [slug, label] of Object.entries(cityIndex).sort((a, b) =>
+      a[1].localeCompare(b[1]))) {
+      const o = document.createElement("option");
+      o.value = slug; o.textContent = label;
+      citySel.appendChild(o);
+    }
+    citySel.value = city;
+  });
 
 document.documentElement.dataset.theme = theme;
 document.body.dataset.view = viewMode;
@@ -654,7 +662,10 @@ async function loadCity(c) {
   updateSpots();
 }
 
-map.on("load", () => loadCity(city));
+map.on("load", async () => {
+  await cityListReady;
+  loadCity(city);
+});
 map.on("zoom", () => { if (resMode === "auto") refreshFilter(); });
 
 citySel.addEventListener("change", () => {

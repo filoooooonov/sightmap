@@ -19,7 +19,7 @@ import urllib.request
 
 import duckdb
 
-from aggregate import CITIES
+from aggregate import all_cities
 
 HERE = pathlib.Path(__file__).parent
 OUT_DIR = HERE / "data" / "commons"
@@ -29,17 +29,6 @@ TILE_CAP = 490   # ggslimit is 500; at ~this many results assume truncation
 MIN_SPAN = 0.002  # ~200m; below this stop splitting
 MAX_TILE = 0.05   # geosearch rejects big bboxes ("Bounding box is too big")
 calls = 0
-
-
-def all_cities() -> dict:
-    """Preset cities plus the phase-1 queue (cities_phase1.json)."""
-    cities = dict(CITIES)
-    extra = HERE / "cities_phase1.json"
-    if extra.exists():
-        cities.update(
-            {k: tuple(v) for k, v in json.loads(extra.read_text(encoding="utf-8")).items()}
-        )
-    return cities
 
 
 def call(params: dict, tries: int = 4) -> dict:
